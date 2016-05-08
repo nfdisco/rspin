@@ -1,0 +1,168 @@
+#!/bin/sh
+
+progname="$(basename "$0")"
+
+tempf="$(mktemp)" || exit 1		# keep list of temporary files
+tempd="$(mktemp)" || exit 1		# keep list of temporary dirs
+
+# currently unused
+tempfile () (
+    filename="$(mktemp)" || return 1
+    printf "%s\n" "$filename" | tee -a "$tempf"
+)
+
+tempdir () (
+    filename="$(mktemp -d)" || return 1
+    printf "%s\n" "$filename" | tee -a "$tempd"
+)
+
+clean_up () {
+    # remove temporary files
+    test -e "$tempf" && { xargs -- rm -f < "$tempf"; rm -f "$tempf"; }
+    test -e "$tempd" && { xargs -- rm -r -f < "$tempd"; rm -f "$tempd"; }
+}
+
+trap "clean_up" 0
+trap "exit 2" 1 2 3 15
+
+usage () {
+    cat <<EOF
+usage: $progname [OPTIONS] [--] [FILE]
+Spin up R script.
+
+Options:
+ -t FILE  --template=FILE     template file
+ -s ARG   --spin=ARG          arguments to be passed to spin()
+ -e EXPR  --expression=EXPR   expression to be evaluated before spin()
+          --help              show this help and exit
+
+EOF
+}
+
+error () {
+    # print $1 to stderr
+    printf "%s: %s\n" "$progname" "$1" 1>&2
+}
+
+find_template () (
+    # find_template <name> : path
+    # Bug: will fail if any directory name has :
+    if printf -- "$1" | grep -q /; then
+	dirs="$(dirname "$1")"
+	subdir=
+    else
+	dirs="${XDG_DATA_HOME:-$HOME/.local/share}:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+	subdir="$progname"
+    fi
+    IFS=:
+    for dir in $dirs; do
+	[ -d "${dir}/${subdir}" ] || continue
+        template="$(find "${dir}/${subdir}" -name "$(basename "$1")")"
+        if [ -n "$template" ]; then
+	    printf -- "$template"
+	    return
+	fi
+    done
+    return 1
+)
+
+# process command line arguments
+getopt -T 2> /dev/null
+[ $? -ne 4 ] && error "unsupported version of getopt" && exit 1
+
+short_opts=t:s:e:
+long_opts=template:,spin:,expression:,help
+args="$(LC_ALL=C getopt -n "$progname" -s sh -o $short_opts -l $long_opts -- "$@")"
+[ $? -eq 0 ] && eval set -- "$args" || exit 1
+
+# set -v
+
+nl='
+'
+TEMPLATE=
+ARGS=
+HOOK=
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+	--help)
+	    usage; exit 0 ;;
+	-t|--template)
+	    TEMPLATE="$(find_template "$2")"
+	    if [ $? -ne 0 ]; then
+		error "could not find template: '$2'"; exit 1
+	    fi
+	    shift ;;
+	-s|--spin)
+	    ARGS="${ARGS:+$ARGS$nl}$2"
+	    shift ;;
+	-e|--expression)
+	    HOOK="${HOOK:+$HOOK$nl}$2"
+	    shift ;;
+	--)
+	    shift; break ;;
+	*)
+	    break
+    esac
+    shift
+done
+
+[ $# -lt 1 ] && { error "non-option argument required."; exit 1; }
+[ $# -gt 1 ] && { error "too many non-option arguments."; exit 1; }
+[ -e "$1" ] || { error "no such file: '$1'"; exit 1; }
+[ -f "$1" ] || { error "not a regular file: '$1'"; exit 1; }
+[ -z "$TEMPLATE" ] && { error "template is required."; exit 1; }
+
+absdir () {
+    cd "$1" 2> /dev/null || return 1
+    printf "%s\n" "$PWD"
+    cd "$OLDPWD"
+}
+
+# this must produce an R expression that sets root.dir and calls spin()
+spinexp () {
+    # opts_knit$set(root.dir="/home/ernest/projects/football/eda/R")
+    printf "%s%s%s%s\n" \
+	   "library(knitr);" \
+	   "opts_knit\$set(root.dir='${3}');" \
+	   "${4:+$(echo "$4" | paste -s -d \;);}" \
+	   "spin('$1'${2:+,$(echo "$2" | paste -s -d ,)})"
+}
+
+SCRIPTDIR="$(dirname "$1")"
+SCRIPT="$(basename "$1")"
+SCRIPTSHORTNAME="${SCRIPT%.*}"
+[ -z "$SCRIPTSHORTNAME" ] && SCRIPTSHORTNAME="$SCRIPT"
+TEMPLATEDIR="$(dirname "$TEMPLATE")"
+TEMPLATE="$(basename "$TEMPLATE")"
+TMPDIR="$(tempdir)" || exit 
+RCODE="$(spinexp "$SCRIPT" "$ARGS" "$(absdir "$SCRIPTDIR")" "$HOOK")"
+
+# BUG: chaos will ensue if $SCRIPT has backslashes.
+make_subs() {
+    # make_subs <file>
+    ed -s "$1" > /dev/null <<EOF
+,s/@@SCRIPTNAME@@/${SCRIPT}/g
+,s/@@SCRIPTSHORTNAME@@/${SCRIPTSHORTNAME}/g
+g/^@@SCRIPT@@$/ka\\
+'ar ${SCRIPT}.orig\\
+'ad\\
+;
+w
+q
+EOF
+}
+
+set -e
+
+cp "${SCRIPTDIR}/${SCRIPT}" "${TMPDIR}/${SCRIPT}.orig"
+cp "${TEMPLATEDIR}/${TEMPLATE}" "${TMPDIR}/${SCRIPT}"
+cd "$TMPDIR"
+make_subs "$SCRIPT" || { error "error while applying template"; exit 1; }
+Rscript -e "$RCODE"
+rm "${SCRIPT}.orig"
+rm "${SCRIPT}"
+cd - > /dev/null
+ls -1q "$TMPDIR" | grep -q . && cp -r "${TMPDIR}"/* .
+
+

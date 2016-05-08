@@ -1,0 +1,9 @@
+Document class and styles can be installed with ctanify.  For instance, to
+install foo.cls in the personal directory tree, one can do
+
+ctanify --pkgname=foo -d `kpsewhich --var-value TEXMFHOME` -- foo.cls
+
+The pkgname option is not necessary when installing .sty files.
+
+Use TEXMFLOCAL instead of TEXMFHOME to install in /usr/local.  Installing
+system-wide requires running texhash afterwards.

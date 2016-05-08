@@ -1,0 +1,14 @@
+#'\documentclass[a4paper,10pt]{printout}
+#'\title{@@SCRIPTNAME@@}
+#'\begin{document}
+setHook(packageEvent("lattice", "attach"),
+        function(...) {
+            lattice.options(default.theme=standard.theme(color=FALSE))
+            trellis.par.set(fontsize=list(text=9, points=6))
+        })
+opts_chunk$set(dev='pdf', fig.width=6, fig.height=4.5,
+               fig.path='./fig/@@SCRIPTSHORTNAME@@-')
+
+@@SCRIPT@@
+
+#'\end{document}
